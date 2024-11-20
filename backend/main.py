@@ -12,6 +12,8 @@ from typing import AsyncGenerator
 import logging
 import sys
 from io import StringIO
+import queue
+import threading
 
 load_dotenv()
 
@@ -27,19 +29,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# スレッドセーフなメッセージキューを作成
+message_queue = queue.Queue()
+
 # ログをキャプチャするためのカスタムハンドラー
 class StringIOHandler(logging.Handler):
     def __init__(self):
         super().__init__()
         self.stream = StringIO()
-        self.subscribers = set()
 
     def emit(self, record):
-        msg = self.format(record)
-        self.stream.write(msg + '\n')
-        # 全てのサブスクライバーに通知
-        for subscriber in self.subscribers:
-            asyncio.create_task(subscriber(msg))
+        try:
+            msg = self.format(record)
+            
+            # デバッグ用のメッセージは除外
+            if any(keyword in msg for keyword in [
+                "load_ssl_context",
+                "verify=True",
+                "INFO:",
+                "DEBUG:",
+                "WARNING:",
+                "ERROR:",
+                "chunk:",
+                "b'data:",
+                "b\"data:",
+                "it/s]",
+            ]):
+                return
+
+            # 空行や特殊文字のみの行は除外
+            if not msg.strip() or msg.strip() in ["│", "─", "└", "├"]:
+                return
+                
+            # メッセージを整形
+            formatted_msg = msg.strip()
+            
+            # 特定のキーワードを日本語に置換
+            replacements = {
+                "EXECUTING HIERACHICAL TASK PLAN": "【実行開始】階層的タスク計画",
+                "TASK-LEVEL REASONING": "【推論開始】タスクレベルの推論",
+                "PLAN(task=": "計画(タスク=",
+                "subs=[": "サブタスク=[",
+            }
+            
+            for eng, jpn in replacements.items():
+                formatted_msg = formatted_msg.replace(eng, jpn)
+            
+            # 整形したメッセージをキューに追加
+            if formatted_msg.strip():
+                message_queue.put(formatted_msg)
+                
+        except Exception as e:
+            print(f"Error in log handler: {e}")
 
 # グローバルなログハンドラーを設定
 io_handler = StringIOHandler()
@@ -47,20 +88,28 @@ io_handler.setFormatter(logging.Formatter('%(message)s'))
 logging.getLogger().addHandler(io_handler)
 logging.getLogger().setLevel(logging.DEBUG)
 
-async def log_generator(request: Request) -> AsyncGenerator[str, None]:
+async def log_generator(request: Request) -> AsyncGenerator[dict, None]:
     """ログメッセージを非同期で生成するジェネレーター"""
-    async def callback(msg: str):
-        if not request.is_disconnected():
-            yield msg
-
-    io_handler.subscribers.add(callback)
     try:
         while True:
             if await request.is_disconnected():
                 break
-            await asyncio.sleep(0.1)
+                
+            try:
+                # キューからメッセージを取得（タイムアウトなし）
+                msg = message_queue.get_nowait()
+                if msg:  # メッセージが空でない場合のみ送信
+                    yield {"data": msg}
+            except queue.Empty:
+                await asyncio.sleep(0.1)
+                continue
+                
+    except Exception as e:
+        print(f"Error in log generator: {e}")
     finally:
-        io_handler.subscribers.remove(callback)
+        # 接続が切れた場合はキューをクリア
+        while not message_queue.empty():
+            message_queue.get()
 
 @cache
 def get_main_lm():
@@ -102,12 +151,32 @@ async def stream_solve(request: Request, question: str, use_knowledge: bool = Fa
 @app.post("/solve")
 async def solve_question(body: QuestionRequest):
     """既存のソルブエンドポイント"""
-    answer = solve(body.question, use_knowledge=body.use_knowledge, use_program_store=body.use_program_store)
+    loop = asyncio.get_event_loop()
+    # ThreadPoolExecutorを使用してsolveを実行
+    answer = await loop.run_in_executor(
+        None, 
+        solve,
+        body.question,
+        body.use_knowledge,
+        body.use_program_store
+    )
     return {"answer": answer}
 
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+@app.get("/sse-test")
+async def sse_test(request: Request):
+    """SSEテスト用エンドポイント"""
+    async def event_generator():
+        for i in range(10):
+            if await request.is_disconnected():
+                break
+            yield {"data": f"テストメッセージ {i}"}
+            await asyncio.sleep(1)  # 1秒ごとにメッセージを送信
+
+    return EventSourceResponse(event_generator())
 
 if __name__ == "__main__":
     import uvicorn

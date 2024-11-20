@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
+import SSETest from './SSETest';
 
 interface SolveResponse {
   answer: string;
@@ -15,6 +16,7 @@ function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [useKnowledge, setUseKnowledge] = useState<boolean>(false);
   const [useProgramStore, setUseProgramStore] = useState<boolean>(false);
+  const [eventSource, setEventSource] = useState<EventSource | null>(null);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -23,13 +25,31 @@ function App() {
     setLogs([]); // ログをクリア
     setError(''); // エラーをクリア
 
+    // EventSourceを先に設定
+    const eventSource = new EventSource(
+      `/api/solve/stream?question=${encodeURIComponent(question)}&use_knowledge=${useKnowledge}&use_program_store=${useProgramStore}`
+    );
+
+    eventSource.onmessage = (event) => {
+      setLogs(prev => {
+        // 最新の5件のログのみを保持
+        const newLogs = [...prev, event.data];
+        return newLogs.slice(-5);
+      });
+    };
+
+    eventSource.onerror = (error) => {
+      console.error('EventSource failed:', error);
+      eventSource.close();
+      setError('ログストリームの接続が切断されました');
+    };
+
     try {
-      // APIパスに /api プレフィックスを追加
       const response = await fetch('/api/solve', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json',  // 明示的にJSONを要求
+          'Accept': 'application/json',
         },
         body: JSON.stringify({
           question,
@@ -45,28 +65,24 @@ function App() {
       const data = await response.json();
       setAnswer(data.answer);
 
-      // EventSourceのパスも修正
-      const eventSource = new EventSource(
-        `/api/solve/stream?question=${encodeURIComponent(question)}&use_knowledge=${useKnowledge}&use_program_store=${useProgramStore}`
-      );
-
-      eventSource.onmessage = (event) => {
-        setLogs(prev => [...prev, event.data]);
-      };
-
-      eventSource.onerror = (error) => {
-        console.error('EventSource failed:', error);
-        eventSource.close();
-      };
-
     } catch (err) {
       console.error('Error:', err);
       setError(err instanceof Error ? err.message : '予期せぬエラーが発生しました');
     } finally {
       setLoading(false);
       setIsProcessing(false);
+      setEventSource(eventSource); // 処理が完了したらEventSourceを保持
     }
   };
+
+  // コンポーネントのクリーンアップ時にEventSourceを閉じる
+  useEffect(() => {
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, []);
 
   return (
     <div className="App">
@@ -116,13 +132,16 @@ function App() {
         {isProcessing && (
           <div className="logs-container">
             <h3>処理状況:</h3>
-            <pre>
-              {logs.map((log, index) => (
-                <div key={index}>{log}</div>
+            <div className="logs-scroll">
+              {logs.slice(-5).map((log, index) => (
+                <div key={index} className="log-line">
+                  {log}
+                </div>
               ))}
-            </pre>
+            </div>
           </div>
         )}
+        <SSETest />
       </header>
     </div>
   );

@@ -11,31 +11,67 @@ function App() {
   const [answer, setAnswer] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
+  const [logs, setLogs] = useState<string[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [useKnowledge, setUseKnowledge] = useState<boolean>(false);
+  const [useProgramStore, setUseProgramStore] = useState<boolean>(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
     setLoading(true);
-    setError('');
-    
+    setIsProcessing(true);
+    setLogs([]); // ログをクリア
+    setError(''); // エラーをクリア
+
     try {
-      const response = await axios.post<SolveResponse>('/api/solve', {
-        question,
-        use_knowledge: false,
-        use_program_store: false
+      // APIパスに /api プレフィックスを追加
+      const response = await fetch('/api/solve', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',  // 明示的にJSONを要求
+        },
+        body: JSON.stringify({
+          question,
+          use_knowledge: useKnowledge,
+          use_program_store: useProgramStore,
+        }),
       });
-      setAnswer(response.data.answer);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setAnswer(data.answer);
+
+      // EventSourceのパスも修正
+      const eventSource = new EventSource(
+        `/api/solve/stream?question=${encodeURIComponent(question)}&use_knowledge=${useKnowledge}&use_program_store=${useProgramStore}`
+      );
+
+      eventSource.onmessage = (event) => {
+        setLogs(prev => [...prev, event.data]);
+      };
+
+      eventSource.onerror = (error) => {
+        console.error('EventSource failed:', error);
+        eventSource.close();
+      };
+
     } catch (err) {
-      setError('APIの呼び出しに失敗しました');
-      console.error('Error calling API:', err);
+      console.error('Error:', err);
+      setError(err instanceof Error ? err.message : '予期せぬエラーが発生しました');
     } finally {
       setLoading(false);
+      setIsProcessing(false);
     }
   };
 
   return (
     <div className="App">
       <header className="App-header">
-        <h1>AI質問応答システム</h1>
+        <h1>OpenSSA質問応答システム</h1>
         <form onSubmit={handleSubmit} className="question-form">
           <textarea
             value={question}
@@ -44,6 +80,24 @@ function App() {
             rows={4}
             className="question-input"
           />
+          <div className="options">
+            <label>
+              <input
+                type="checkbox"
+                checked={useKnowledge}
+                onChange={(e) => setUseKnowledge(e.target.checked)}
+              />
+              知識ベースを使用
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={useProgramStore}
+                onChange={(e) => setUseProgramStore(e.target.checked)}
+              />
+              プログラムストアを使用
+            </label>
+          </div>
           <button type="submit" disabled={loading || !question}>
             {loading ? '処理中...' : '質問する'}
           </button>
@@ -55,6 +109,18 @@ function App() {
           <div className="answer-container">
             <h2>回答:</h2>
             <p>{answer}</p>
+          </div>
+        )}
+        
+        {/* ログ表示エリア */}
+        {isProcessing && (
+          <div className="logs-container">
+            <h3>処理状況:</h3>
+            <pre>
+              {logs.map((log, index) => (
+                <div key={index}>{log}</div>
+              ))}
+            </pre>
           </div>
         )}
       </header>

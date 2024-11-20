@@ -1,21 +1,8 @@
 version: '3.8'
 
 services:
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./backend:/app
-    environment:
-      - PYTHONUNBUFFERED=1
-
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    build: ./frontend
     ports:
       - "3000:3000"
     volumes:
@@ -24,4 +11,11 @@ services:
     environment:
       - WATCHPACK_POLLING=true
     depends_on:
-      - backend 
+      - backend
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app

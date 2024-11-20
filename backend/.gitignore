@@ -2,4 +2,4 @@ venv/
 __pycache__/
 .DS_Store
 .env
-data/.text-embedding-3-large/
+.data/.text-embedding-3-large/
